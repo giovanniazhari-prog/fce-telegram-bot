@@ -473,7 +473,7 @@ require("dotenv").config();
   });
 
   bot.hears(["📋 Pilih Domain", "📋 Ganti Domain"], (ctx) => {
-    ctx.replyWithHTML(`📋 <b>Pilih domain:`, domainKeyboard());
+    ctx.replyWithHTML(`📋 <b>Pilih domain:</b>`, domainKeyboard());
   });
 
   FREE_DOMAINS.forEach((domain) => {
