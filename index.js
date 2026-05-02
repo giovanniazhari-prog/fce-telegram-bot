@@ -134,6 +134,70 @@ async function fceGet(path) {
   return res.json();
 }
 
+// ============================================================
+//  AUTO POLLING — langsung aktif saat email dibuat
+// ============================================================
+function startAutoPolling(chatId, email) {
+  stopPolling(chatId);
+
+  const state = getState(chatId);
+  state.seenMessageIds = new Set();
+  state.lastOtp = null;
+
+  // Polling aktif selama 24 jam (sesuai lifetime email)
+  const maxDuration = 24 * 60 * 60 * 1000;
+  const startTime = Date.now();
+  const pollInterval = 4000;
+
+  const timer = setInterval(async () => {
+    // Berhenti jika sudah 24 jam atau email berubah
+    if (Date.now() - startTime > maxDuration) {
+      stopPolling(chatId);
+      return;
+    }
+
+    const cs = getState(chatId);
+    if (cs.email !== email) { stopPolling(chatId); return; }
+    if (!cs.pollingTimer) return;
+
+    try {
+      // Cek email baru masuk
+      const msgResult = await fceGet(`/inboxes/${email}/messages`);
+      if (msgResult.success && msgResult.data?.length > 0) {
+        for (const msg of msgResult.data) {
+          const mid = msg.id || msg.messageId || `${msg.from}-${msg.subject}-${msg.receivedAt}`;
+          if (!cs.seenMessageIds.has(mid)) {
+            cs.seenMessageIds.add(mid);
+            const time = msg.receivedAt || msg.date;
+            await bot.telegram.sendMessage(chatId,
+              `📩 <b>Email Baru Masuk!</b>\n\n` +
+              `📧 <code>${email}</code>\n\n` +
+              `<b>Dari:</b> ${escapeHtml(msg.from || "-")}\n` +
+              `<b>Subjek:</b> ${escapeHtml(truncate(msg.subject || "(tanpa subjek)", 80))}\n` +
+              (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : ""),
+              { parse_mode: "HTML", ...inboxKeyboard() }
+            );
+          }
+        }
+      }
+
+      // Cek OTP baru
+      const otpResult = await fceGet(`/inboxes/${email}/otp`);
+      if (otpResult.success && otpResult.otp && otpResult.otp !== cs.lastOtp) {
+        cs.lastOtp = otpResult.otp;
+        await bot.telegram.sendMessage(chatId,
+          `🔔 <b>OTP Masuk!</b>\n\n` +
+          `📧 <code>${email}</code>\n\n` +
+          `Tap kode untuk menyalin:\n<code>${otpResult.otp}</code>`,
+          { parse_mode: "HTML", ...inboxKeyboard() }
+        );
+      }
+    } catch (_) {}
+  }, pollInterval);
+
+  state.pollingTimer = timer;
+}
+
 async function createEmailForUser(chatId, domain) {
   stopPolling(chatId);
   const name = generateHumanName();
@@ -145,6 +209,10 @@ async function createEmailForUser(chatId, domain) {
   state.email = email;
   state.seenMessageIds = new Set();
   state.lastOtp = null;
+
+  // Langsung mulai polling otomatis
+  startAutoPolling(chatId, email);
+
   return { success: true, email };
 }
 
@@ -160,7 +228,7 @@ function truncate(str, max = 100) {
 }
 
 // ============================================================
-//  REPLY KEYBOARD (muncul di bawah area ketik)
+//  REPLY KEYBOARD
 // ============================================================
 function mainMenuKeyboard(userId) {
   const rows = [
@@ -175,9 +243,8 @@ function mainMenuKeyboard(userId) {
 function inboxKeyboard() {
   return Markup.keyboard([
     ["📬 Cek Inbox", "🔑 Cek OTP"],
-    ["🔔 Auto Notif (10 menit)"],
     ["🆕 Buat Email Baru", "📋 Ganti Domain"],
-    ["🏠 Menu Utama"],
+    ["⛔ Stop Notif", "🏠 Menu Utama"],
   ]).resize();
 }
 
@@ -190,10 +257,6 @@ function domainKeyboard() {
   }
   rows.push(["🏠 Menu Utama"]);
   return Markup.keyboard(rows).resize();
-}
-
-function stopKeyboard() {
-  return Markup.keyboard([["⛔ Stop Auto Notif"]]).resize();
 }
 
 function adminKeyboard() {
@@ -245,50 +308,51 @@ bot.start((ctx) => {
   stopPolling(ctx.chat.id);
   ctx.replyWithHTML(
     `👋 <b>Selamat datang di Temp Mail Bot!</b>\n\n` +
-      `Buat inbox sementara instan, terima email &amp; OTP otomatis.\n\n` +
+      `Buat inbox sementara instan — OTP masuk langsung dikirim ke sini otomatis.\n\n` +
       `📌 <i>Email bertahan ±24 jam</i>`,
     mainMenuKeyboard(ctx.from.id)
   );
 });
 
 // ============================================================
-//  HANDLER TOMBOL REPLY KEYBOARD
+//  HANDLER TOMBOL
 // ============================================================
 
-// --- Menu Utama ---
 bot.hears("🏠 Menu Utama", (ctx) => {
-  stopPolling(ctx.chat.id);
   ctx.replyWithHTML(`🏠 <b>Menu Utama</b>`, mainMenuKeyboard(ctx.from.id));
 });
 
-// --- Buat Email Baru ---
+// Buat Email — langsung mulai polling otomatis
 bot.hears(["🎲 Buat Email Baru", "🆕 Buat Email Baru"], async (ctx) => {
   const r = await createEmailForUser(ctx.chat.id);
   if (!r.success) return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard(ctx.from.id));
   ctx.replyWithHTML(
-    `✅ <b>Email siap digunakan!</b>\n\n📧 <code>${r.email}</code>\n\nTap email untuk menyalin. Pilih aksi:`,
+    `✅ <b>Email siap digunakan!</b>\n\n` +
+    `📧 <code>${r.email}</code>\n\n` +
+    `🔔 <i>Notif OTP otomatis aktif — kamu akan langsung diberitahu saat ada email atau OTP masuk.</i>`,
     inboxKeyboard()
   );
 });
 
-// --- Pilih Domain ---
+// Pilih Domain — langsung mulai polling otomatis
 bot.hears(["📋 Pilih Domain", "📋 Ganti Domain"], (ctx) => {
-  ctx.replyWithHTML(`📋 <b>Pilih domain:</b>\n\nTap nama domain di bawah:`, domainKeyboard());
+  ctx.replyWithHTML(`📋 <b>Pilih domain:</b>`, domainKeyboard());
 });
 
-// --- Domain buttons ---
 FREE_DOMAINS.forEach((domain) => {
   bot.hears(`@${domain}`, async (ctx) => {
     const r = await createEmailForUser(ctx.chat.id, domain);
     if (!r.success) return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard(ctx.from.id));
     ctx.replyWithHTML(
-      `✅ <b>Email siap digunakan!</b>\n\n📧 <code>${r.email}</code>\n\nTap email untuk menyalin. Pilih aksi:`,
+      `✅ <b>Email siap digunakan!</b>\n\n` +
+      `📧 <code>${r.email}</code>\n\n` +
+      `🔔 <i>Notif OTP otomatis aktif — kamu akan langsung diberitahu saat ada email atau OTP masuk.</i>`,
       inboxKeyboard()
     );
   });
 });
 
-// --- Cek Inbox ---
+// Cek Inbox (manual)
 bot.hears("📬 Cek Inbox", async (ctx) => {
   const state = getState(ctx.chat.id);
   if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
@@ -310,14 +374,14 @@ bot.hears("📬 Cek Inbox", async (ctx) => {
   ctx.replyWithHTML(text, inboxKeyboard());
 });
 
-// --- Cek OTP ---
+// Cek OTP (manual)
 bot.hears("🔑 Cek OTP", async (ctx) => {
   const state = getState(ctx.chat.id);
   if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
   const result = await fceGet(`/inboxes/${state.email}/otp`);
   if (!result.success || !result.otp) {
     return ctx.replyWithHTML(
-      `🔍 <b>Belum ada OTP</b>\n\n📧 <code>${state.email}</code>\n\nGunakan <b>🔔 Auto Notif</b> agar OTP langsung dikirim otomatis.`,
+      `🔍 <b>Belum ada OTP</b>\n\n📧 <code>${state.email}</code>\n\nTenang, notif OTP otomatis sudah aktif dan akan masuk sendiri.`,
       inboxKeyboard()
     );
   }
@@ -327,79 +391,12 @@ bot.hears("🔑 Cek OTP", async (ctx) => {
   );
 });
 
-// --- Auto Notif ---
-bot.hears("🔔 Auto Notif (10 menit)", async (ctx) => {
-  const state = getState(ctx.chat.id);
-  if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
-
-  stopPolling(ctx.chat.id);
-  state.seenMessageIds = state.seenMessageIds || new Set();
-  state.lastOtp = state.lastOtp || null;
-
-  const email = state.email;
-  const chatId = ctx.chat.id;
-  const startTime = Date.now();
-  const maxDuration = 10 * 60 * 1000;
-  const pollInterval = 4000;
-
-  await ctx.replyWithHTML(
-    `🔔 <b>Auto Notif Aktif</b>\n\n📧 <code>${email}</code>\n\n` +
-      `Notif otomatis:\n• Email baru masuk\n• OTP terdeteksi (tap untuk copy)\n\n⏱ Aktif <b>10 menit</b>`,
-    stopKeyboard()
-  );
-
-  const timer = setInterval(async () => {
-    if (Date.now() - startTime > maxDuration) {
-      stopPolling(chatId);
-      bot.telegram.sendMessage(chatId,
-        `⏰ <b>Auto Notif selesai</b> (10 menit habis)\n\n📧 <code>${email}</code>`,
-        { parse_mode: "HTML", ...inboxKeyboard() }
-      );
-      return;
-    }
-    try {
-      const cs = getState(chatId);
-      if (cs.email !== email) { stopPolling(chatId); return; }
-
-      const msgResult = await fceGet(`/inboxes/${email}/messages`);
-      if (msgResult.success && msgResult.data?.length > 0) {
-        for (const msg of msgResult.data) {
-          const mid = msg.id || msg.messageId || `${msg.from}-${msg.subject}-${msg.receivedAt}`;
-          if (!cs.seenMessageIds.has(mid)) {
-            cs.seenMessageIds.add(mid);
-            const time = msg.receivedAt || msg.date;
-            await bot.telegram.sendMessage(chatId,
-              `📩 <b>Email Baru Masuk!</b>\n\n📧 <code>${email}</code>\n\n` +
-                `<b>Dari:</b> ${escapeHtml(msg.from || "-")}\n` +
-                `<b>Subjek:</b> ${escapeHtml(truncate(msg.subject || "(tanpa subjek)", 80))}\n` +
-                (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : ""),
-              { parse_mode: "HTML" }
-            );
-          }
-        }
-      }
-
-      const otpResult = await fceGet(`/inboxes/${email}/otp`);
-      if (otpResult.success && otpResult.otp && otpResult.otp !== cs.lastOtp) {
-        cs.lastOtp = otpResult.otp;
-        await bot.telegram.sendMessage(chatId,
-          `🔔 <b>OTP Otomatis Terdeteksi!</b>\n\n📧 <code>${email}</code>\n\n` +
-            `Tap kode untuk menyalin:\n<code>${otpResult.otp}</code>`,
-          { parse_mode: "HTML", ...inboxKeyboard() }
-        );
-      }
-    } catch (_) {}
-  }, pollInterval);
-
-  getState(chatId).pollingTimer = timer;
-});
-
-// --- Stop Auto Notif ---
-bot.hears("⛔ Stop Auto Notif", (ctx) => {
+// Stop Notif
+bot.hears("⛔ Stop Notif", (ctx) => {
   stopPolling(ctx.chat.id);
   const state = getState(ctx.chat.id);
   ctx.replyWithHTML(
-    `⛔ <b>Auto Notif dihentikan.</b>\n\n📧 <code>${state.email || "-"}</code>`,
+    `⛔ <b>Notif otomatis dihentikan.</b>\n\n📧 <code>${state.email || "-"}</code>\n\nKamu bisa cek inbox/OTP manual kapanpun.`,
     inboxKeyboard()
   );
 });
@@ -427,7 +424,6 @@ bot.hears("🔑 Generate Token", (ctx) => {
   ctx.replyWithHTML(
     `✅ <b>Token Baru Dibuat!</b>\n\n` +
       `Token: <code>${token}</code>\n\n` +
-      `Kirim token ini ke user yang ingin diberi akses.\n` +
       `Token hanya bisa dipakai oleh <b>1 orang</b>.`,
     adminKeyboard()
   );
@@ -435,9 +431,7 @@ bot.hears("🔑 Generate Token", (ctx) => {
 
 bot.hears("📋 Lihat Token", (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML(`❌ Bukan admin.`);
-  if (accessTokens.size === 0) {
-    return ctx.replyWithHTML(`📋 <b>Belum ada token.</b>`, adminKeyboard());
-  }
+  if (accessTokens.size === 0) return ctx.replyWithHTML(`📋 <b>Belum ada token.</b>`, adminKeyboard());
   let text = `📋 <b>Daftar Token (${accessTokens.size})</b>\n\n`;
   let i = 1;
   for (const [token, info] of accessTokens.entries()) {
@@ -451,9 +445,7 @@ bot.hears("📋 Lihat Token", (ctx) => {
 bot.hears("🚫 Cabut Token", (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML(`❌ Bukan admin.`);
   getState(ctx.chat.id).awaitingRevoke = true;
-  ctx.replyWithHTML(
-    `🚫 <b>Cabut Token</b>\n\nKetik token yang ingin dicabut (format: <code>TKN-XXXX-XXXX</code>):`
-  );
+  ctx.replyWithHTML(`🚫 Ketik token yang ingin dicabut (format: <code>TKN-XXXX-XXXX</code>):`);
 });
 
 bot.hears("👥 Lihat User", (ctx) => {
@@ -467,7 +459,7 @@ bot.hears("👥 Lihat User", (ctx) => {
 });
 
 // ============================================================
-//  TEXT HANDLER (cabut token)
+//  TEXT HANDLER
 // ============================================================
 bot.on("text", (ctx) => {
   const userId = ctx.from.id;
