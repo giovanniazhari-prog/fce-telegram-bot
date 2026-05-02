@@ -15,22 +15,12 @@ const ADMIN_ID = 6533320536;
 // ============================================================
 //  AKSES & TOKEN MANAGEMENT
 // ============================================================
-// User yang sudah berhak akses (bertahan selama bot nyala)
 const authorizedUsers = new Set([ADMIN_ID]);
-
-// Map token -> { note, createdAt, usedBy (userId atau null) }
 const accessTokens = new Map();
-
-// User yang sedang menunggu input token
 const awaitingToken = new Set();
 
-function isAuthorized(userId) {
-  return authorizedUsers.has(userId);
-}
-
-function isAdmin(userId) {
-  return userId === ADMIN_ID;
-}
+function isAuthorized(userId) { return authorizedUsers.has(userId); }
+function isAdmin(userId) { return userId === ADMIN_ID; }
 
 function generateToken() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -42,7 +32,7 @@ function generateToken() {
 function validateAndConsumeToken(token, userId) {
   const t = accessTokens.get(token.toUpperCase());
   if (!t) return false;
-  if (t.usedBy && t.usedBy !== userId) return false; // token sudah dipakai user lain
+  if (t.usedBy && t.usedBy !== userId) return false;
   t.usedBy = userId;
   authorizedUsers.add(userId);
   return true;
@@ -170,46 +160,48 @@ function truncate(str, max = 100) {
 }
 
 // ============================================================
-//  KEYBOARD
+//  REPLY KEYBOARD (muncul di bawah area ketik)
 // ============================================================
 function mainMenuKeyboard(userId) {
   const rows = [
-    [Markup.button.callback("🎲 Buat Email Baru", "create_email")],
-    [Markup.button.callback("📋 Pilih Domain Sendiri", "choose_domain")],
+    ["🎲 Buat Email Baru", "📋 Pilih Domain"],
   ];
   if (isAdmin(userId)) {
-    rows.push([Markup.button.callback("⚙️ Panel Admin", "admin_panel")]);
+    rows.push(["⚙️ Panel Admin"]);
   }
-  return Markup.inlineKeyboard(rows);
+  return Markup.keyboard(rows).resize();
 }
 
 function inboxKeyboard() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("📬 Cek Inbox", "check_inbox"), Markup.button.callback("🔑 Cek OTP", "check_otp")],
-    [Markup.button.callback("🔔 Auto Notif (10 menit)", "auto_otp")],
-    [Markup.button.callback("🆕 Buat Email Baru", "create_email")],
-    [Markup.button.callback("📋 Ganti Domain", "choose_domain")],
-  ]);
+  return Markup.keyboard([
+    ["📬 Cek Inbox", "🔑 Cek OTP"],
+    ["🔔 Auto Notif (10 menit)"],
+    ["🆕 Buat Email Baru", "📋 Ganti Domain"],
+    ["🏠 Menu Utama"],
+  ]).resize();
 }
 
 function domainKeyboard() {
-  const buttons = FREE_DOMAINS.map((d) => [Markup.button.callback(`@${d}`, `domain_${d}`)]);
-  buttons.push([Markup.button.callback("🔙 Kembali", "back_main")]);
-  return Markup.inlineKeyboard(buttons);
+  const rows = [];
+  for (let i = 0; i < FREE_DOMAINS.length; i += 2) {
+    const row = [`@${FREE_DOMAINS[i]}`];
+    if (FREE_DOMAINS[i + 1]) row.push(`@${FREE_DOMAINS[i + 1]}`);
+    rows.push(row);
+  }
+  rows.push(["🏠 Menu Utama"]);
+  return Markup.keyboard(rows).resize();
 }
 
 function stopKeyboard() {
-  return Markup.inlineKeyboard([[Markup.button.callback("⛔ Stop Auto Notif", "stop_auto_otp")]]);
+  return Markup.keyboard([["⛔ Stop Auto Notif"]]).resize();
 }
 
 function adminKeyboard() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("🔑 Generate Token Baru", "admin_gen_token")],
-    [Markup.button.callback("📋 Lihat Token Aktif", "admin_list_tokens")],
-    [Markup.button.callback("🚫 Cabut Token", "admin_revoke_menu")],
-    [Markup.button.callback("👥 Lihat User Aktif", "admin_list_users")],
-    [Markup.button.callback("🔙 Kembali", "back_main")],
-  ]);
+  return Markup.keyboard([
+    ["🔑 Generate Token", "📋 Lihat Token"],
+    ["🚫 Cabut Token", "👥 Lihat User"],
+    ["🏠 Menu Utama"],
+  ]).resize();
 }
 
 // ============================================================
@@ -222,10 +214,8 @@ bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
-  // Admin & user yang sudah punya token = lanjut
   if (isAuthorized(userId)) return next();
 
-  // User sedang menunggu input token (mode teks)
   if (awaitingToken.has(userId) && ctx.message?.text) {
     const token = ctx.message.text.trim().toUpperCase();
     if (validateAndConsumeToken(token, userId)) {
@@ -241,22 +231,13 @@ bot.use(async (ctx, next) => {
     }
   }
 
-  // User tidak dikenal → tampilkan peringatan
   await ctx.replyWithHTML(
-    `🔒 <b>Bot ini bersifat pribadi dan tidak dapat diakses secara bebas.</b>\n\n` +
+    `🔒 <b>Bot ini bersifat pribadi.</b>\n\n` +
       `Untuk menggunakan bot ini, kamu memerlukan <b>token akses</b> dari admin.\n\n` +
-      `Jika sudah punya token, kirimkan tokennya sekarang.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🔑 Masukkan Token", "enter_token")],
-    ])
+      `Kirimkan tokennya sekarang (format: <code>TKN-XXXX-XXXX</code>).`,
+    Markup.removeKeyboard()
   );
-});
-
-// --- Tombol masukkan token ---
-bot.action("enter_token", async (ctx) => {
-  await ctx.answerCbQuery();
-  awaitingToken.add(ctx.from.id);
-  ctx.replyWithHTML(`🔑 Kirimkan token akses kamu sekarang (format: <code>TKN-XXXX-XXXX</code>):`);
+  awaitingToken.add(userId);
 });
 
 // --- /start ---
@@ -271,42 +252,44 @@ bot.start((ctx) => {
 });
 
 // ============================================================
-//  EMAIL ACTIONS
+//  HANDLER TOMBOL REPLY KEYBOARD
 // ============================================================
-bot.action("create_email", async (ctx) => {
-  await ctx.answerCbQuery();
+
+// --- Menu Utama ---
+bot.hears("🏠 Menu Utama", (ctx) => {
+  stopPolling(ctx.chat.id);
+  ctx.replyWithHTML(`🏠 <b>Menu Utama</b>`, mainMenuKeyboard(ctx.from.id));
+});
+
+// --- Buat Email Baru ---
+bot.hears(["🎲 Buat Email Baru", "🆕 Buat Email Baru"], async (ctx) => {
   const r = await createEmailForUser(ctx.chat.id);
   if (!r.success) return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard(ctx.from.id));
-  ctx.editMessageText(
+  ctx.replyWithHTML(
     `✅ <b>Email siap digunakan!</b>\n\n📧 <code>${r.email}</code>\n\nTap email untuk menyalin. Pilih aksi:`,
-    { parse_mode: "HTML", ...inboxKeyboard() }
+    inboxKeyboard()
   );
 });
 
-bot.action("choose_domain", async (ctx) => {
-  await ctx.answerCbQuery();
-  ctx.editMessageText(`📋 <b>Pilih domain:</b>`, { parse_mode: "HTML", ...domainKeyboard() });
+// --- Pilih Domain ---
+bot.hears(["📋 Pilih Domain", "📋 Ganti Domain"], (ctx) => {
+  ctx.replyWithHTML(`📋 <b>Pilih domain:</b>\n\nTap nama domain di bawah:`, domainKeyboard());
 });
 
+// --- Domain buttons ---
 FREE_DOMAINS.forEach((domain) => {
-  bot.action(`domain_${domain}`, async (ctx) => {
-    await ctx.answerCbQuery();
+  bot.hears(`@${domain}`, async (ctx) => {
     const r = await createEmailForUser(ctx.chat.id, domain);
     if (!r.success) return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard(ctx.from.id));
-    ctx.editMessageText(
+    ctx.replyWithHTML(
       `✅ <b>Email siap digunakan!</b>\n\n📧 <code>${r.email}</code>\n\nTap email untuk menyalin. Pilih aksi:`,
-      { parse_mode: "HTML", ...inboxKeyboard() }
+      inboxKeyboard()
     );
   });
 });
 
-bot.action("back_main", async (ctx) => {
-  await ctx.answerCbQuery();
-  ctx.editMessageText(`🏠 <b>Menu Utama</b>`, { parse_mode: "HTML", ...mainMenuKeyboard(ctx.from.id) });
-});
-
-bot.action("check_inbox", async (ctx) => {
-  await ctx.answerCbQuery("Mengecek inbox...");
+// --- Cek Inbox ---
+bot.hears("📬 Cek Inbox", async (ctx) => {
   const state = getState(ctx.chat.id);
   if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
   const result = await fceGet(`/inboxes/${state.email}/messages`);
@@ -327,8 +310,8 @@ bot.action("check_inbox", async (ctx) => {
   ctx.replyWithHTML(text, inboxKeyboard());
 });
 
-bot.action("check_otp", async (ctx) => {
-  await ctx.answerCbQuery("Mencari OTP...");
+// --- Cek OTP ---
+bot.hears("🔑 Cek OTP", async (ctx) => {
   const state = getState(ctx.chat.id);
   if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
   const result = await fceGet(`/inboxes/${state.email}/otp`);
@@ -344,8 +327,8 @@ bot.action("check_otp", async (ctx) => {
   );
 });
 
-bot.action("auto_otp", async (ctx) => {
-  await ctx.answerCbQuery("Auto Notif aktif!");
+// --- Auto Notif ---
+bot.hears("🔔 Auto Notif (10 menit)", async (ctx) => {
   const state = getState(ctx.chat.id);
   if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
 
@@ -389,8 +372,7 @@ bot.action("auto_otp", async (ctx) => {
               `📩 <b>Email Baru Masuk!</b>\n\n📧 <code>${email}</code>\n\n` +
                 `<b>Dari:</b> ${escapeHtml(msg.from || "-")}\n` +
                 `<b>Subjek:</b> ${escapeHtml(truncate(msg.subject || "(tanpa subjek)", 80))}\n` +
-                (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : "") +
-                `\n🔍 <i>Sedang mencari OTP...</i>`,
+                (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : ""),
               { parse_mode: "HTML" }
             );
           }
@@ -412,8 +394,8 @@ bot.action("auto_otp", async (ctx) => {
   getState(chatId).pollingTimer = timer;
 });
 
-bot.action("stop_auto_otp", async (ctx) => {
-  await ctx.answerCbQuery("Auto Notif dihentikan.");
+// --- Stop Auto Notif ---
+bot.hears("⛔ Stop Auto Notif", (ctx) => {
   stopPolling(ctx.chat.id);
   const state = getState(ctx.chat.id);
   ctx.replyWithHTML(
@@ -425,24 +407,21 @@ bot.action("stop_auto_otp", async (ctx) => {
 // ============================================================
 //  PANEL ADMIN
 // ============================================================
-bot.action("admin_panel", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("❌ Bukan admin.");
-  await ctx.answerCbQuery();
+bot.hears("⚙️ Panel Admin", (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML(`❌ Bukan admin.`);
   const totalTokens = accessTokens.size;
   const usedTokens = [...accessTokens.values()].filter(t => t.usedBy).length;
-  ctx.editMessageText(
+  ctx.replyWithHTML(
     `⚙️ <b>Panel Admin</b>\n\n` +
       `👥 User aktif: <b>${authorizedUsers.size}</b>\n` +
       `🔑 Token dibuat: <b>${totalTokens}</b> (${usedTokens} terpakai)\n\n` +
       `Pilih aksi:`,
-    { parse_mode: "HTML", ...adminKeyboard() }
+    adminKeyboard()
   );
 });
 
-// Generate token baru
-bot.action("admin_gen_token", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("❌ Bukan admin.");
-  await ctx.answerCbQuery();
+bot.hears("🔑 Generate Token", (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML(`❌ Bukan admin.`);
   const token = generateToken();
   accessTokens.set(token, { createdAt: new Date(), usedBy: null });
   ctx.replyWithHTML(
@@ -454,10 +433,8 @@ bot.action("admin_gen_token", async (ctx) => {
   );
 });
 
-// Lihat token aktif
-bot.action("admin_list_tokens", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("❌ Bukan admin.");
-  await ctx.answerCbQuery();
+bot.hears("📋 Lihat Token", (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML(`❌ Bukan admin.`);
   if (accessTokens.size === 0) {
     return ctx.replyWithHTML(`📋 <b>Belum ada token.</b>`, adminKeyboard());
   }
@@ -471,20 +448,16 @@ bot.action("admin_list_tokens", async (ctx) => {
   ctx.replyWithHTML(text, adminKeyboard());
 });
 
-// Cabut token — minta input
-bot.action("admin_revoke_menu", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("❌ Bukan admin.");
-  await ctx.answerCbQuery();
+bot.hears("🚫 Cabut Token", (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML(`❌ Bukan admin.`);
   getState(ctx.chat.id).awaitingRevoke = true;
   ctx.replyWithHTML(
-    `🚫 <b>Cabut Token</b>\n\nKirim token yang ingin dicabut (format: <code>TKN-XXXX-XXXX</code>):`
+    `🚫 <b>Cabut Token</b>\n\nKetik token yang ingin dicabut (format: <code>TKN-XXXX-XXXX</code>):`
   );
 });
 
-// Lihat user aktif
-bot.action("admin_list_users", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery("❌ Bukan admin.");
-  await ctx.answerCbQuery();
+bot.hears("👥 Lihat User", (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.replyWithHTML(`❌ Bukan admin.`);
   const users = [...authorizedUsers];
   let text = `👥 <b>User Aktif (${users.length})</b>\n\n`;
   users.forEach((uid, i) => {
@@ -494,13 +467,12 @@ bot.action("admin_list_users", async (ctx) => {
 });
 
 // ============================================================
-//  TEXT HANDLER (token input & cabut token)
+//  TEXT HANDLER (cabut token)
 // ============================================================
 bot.on("text", (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text.trim();
 
-  // Admin: cabut token
   if (isAdmin(userId)) {
     const state = getState(ctx.chat.id);
     if (state.awaitingRevoke) {
@@ -508,7 +480,6 @@ bot.on("text", (ctx) => {
       const token = text.toUpperCase();
       if (accessTokens.has(token)) {
         const info = accessTokens.get(token);
-        // Cabut akses user yang pakai token ini
         if (info.usedBy) authorizedUsers.delete(info.usedBy);
         accessTokens.delete(token);
         return ctx.replyWithHTML(
@@ -522,8 +493,7 @@ bot.on("text", (ctx) => {
     }
   }
 
-  // Fallback
-  ctx.replyWithHTML(`Gunakan tombol di bawah:`, mainMenuKeyboard(userId));
+  ctx.replyWithHTML(`Gunakan tombol di bawah 👇`, mainMenuKeyboard(userId));
 });
 
 // ============================================================
