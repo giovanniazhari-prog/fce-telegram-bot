@@ -8,7 +8,6 @@ require("dotenv").config();
   // ============================================================
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const TMAIL_BASE = "https://free-temp-mail.eu.org";
-
   const ADMIN_ID = 6533320536;
 
   // ============================================================
@@ -58,7 +57,6 @@ require("dotenv").config();
     "william","charlotte","thomas","grace","harry","alice","ryan","megan","kevin","laura",
     "daniel","jessica","chris","amanda","mark","rachel","brian","melissa","paul","emily",
     "jason","ashley","eric","stephanie","adam","nicole","joshua","brittany","sean","samantha",
-    "jake","natalie","kyle","hannah","nathan","victoria","tyler","madison","alexis","vanessa",
   ];
 
   const LAST_NAMES = [
@@ -68,8 +66,6 @@ require("dotenv").config();
     "mulyadi","hartono","sugiarto","surya","wahyudi","ramadan","salim","iskandar",
     "smith","johnson","brown","davis","wilson","anderson","taylor","thomas","jackson",
     "white","harris","martin","thompson","garcia","martinez","robinson","clark","lewis",
-    "walker","hall","allen","young","king","wright","scott","green","baker","adams",
-    "nelson","hill","carter","mitchell","perez","roberts","turner","phillips","campbell",
   ];
 
   const usedNames = new Set();
@@ -87,10 +83,7 @@ require("dotenv").config();
         `${first}.${last}${Math.floor(Math.random() * 90) + 10}`,
       ];
       const name = formats[Math.floor(Math.random() * formats.length)];
-      if (!usedNames.has(name)) {
-        usedNames.add(name);
-        return name;
-      }
+      if (!usedNames.has(name)) { usedNames.add(name); return name; }
     }
     return `user.${Date.now().toString(36)}`;
   }
@@ -115,12 +108,41 @@ require("dotenv").config();
   }
 
   // ============================================================
+  //  HELPER: Extract cookies dari response headers (node-fetch v2 compatible)
+  // ============================================================
+  function extractCookies(headers) {
+    // node-fetch v2: headers.raw() returns { 'set-cookie': [...] }
+    // Fallback: headers.get returns first value only
+    let cookies = [];
+    try {
+      if (typeof headers.raw === 'function') {
+        const raw = headers.raw();
+        cookies = raw['set-cookie'] || [];
+      }
+    } catch (_) {}
+    
+    if (cookies.length === 0) {
+      // Manual fallback: iterate all header entries
+      const combined = headers.get('set-cookie') || '';
+      if (combined) cookies = [combined];
+    }
+    
+    let xsrfRaw = "";
+    let sessionVal = "";
+    for (const c of cookies) {
+      const parts = c.split(';');
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith('XSRF-TOKEN=')) xsrfRaw = trimmed.slice('XSRF-TOKEN='.length);
+        if (trimmed.startsWith('tmail_session=')) sessionVal = trimmed.slice('tmail_session='.length);
+      }
+    }
+    return { xsrfRaw, sessionVal };
+  }
+
+  // ============================================================
   //  FREE-TEMP-MAIL SESSION MANAGEMENT
   // ============================================================
-
-  /**
-   * Inisialisasi sesi baru untuk pengguna: GET homepage → ambil cookies + CSRF + snapshot Livewire
-   */
   async function initSession() {
     const res = await fetch(`${TMAIL_BASE}/`, {
       headers: {
@@ -131,18 +153,9 @@ require("dotenv").config();
     });
     const html = await res.text();
 
-    // Ambil cookies dari response
-    const rawCookies = res.headers.raw?.()["set-cookie"] || [];
-    let xsrfRaw = "";
-    let sessionVal = "";
-    for (const c of rawCookies) {
-      const xsrfMatch = c.match(/^XSRF-TOKEN=([^;]+)/);
-      const sessMatch = c.match(/^tmail_session=([^;]+)/);
-      if (xsrfMatch) xsrfRaw = xsrfMatch[1];
-      if (sessMatch) sessionVal = sessMatch[1];
-    }
+    const { xsrfRaw, sessionVal } = extractCookies(res.headers);
+    console.log(`[initSession] xsrf=${xsrfRaw ? 'OK' : 'EMPTY'} session=${sessionVal ? 'OK' : 'EMPTY'}`);
 
-    // Ambil snapshot Livewire frontend.actions
     const lwMatch = html.match(/wire:snapshot="([^"]+)"/);
     if (!lwMatch) throw new Error("Tidak bisa menemukan Livewire snapshot");
     const snapshot = JSON.parse(lwMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
@@ -156,9 +169,6 @@ require("dotenv").config();
     };
   }
 
-  /**
-   * Panggil Livewire update endpoint
-   */
   async function livewireUpdate(session, snapshot, updates, calls, referer = "/") {
     const payload = {
       components: [{
@@ -182,7 +192,20 @@ require("dotenv").config();
       body: JSON.stringify(payload),
     });
 
-    if (!res.ok) throw new Error(`Livewire error: ${res.status}`);
+    if (!res.ok) {
+      const body = await res.text();
+      console.log(`[livewireUpdate] ERROR ${res.status}: ${body.slice(0, 300)}`);
+      throw new Error(`Livewire error: ${res.status}`);
+    }
+    
+    // Update cookies jika server mengirim cookie baru
+    const { xsrfRaw, sessionVal } = extractCookies(res.headers);
+    if (xsrfRaw) { session.xsrfRaw = xsrfRaw; session.xsrfDecoded = decodeURIComponent(xsrfRaw); }
+    if (sessionVal) session.sessionVal = sessionVal;
+    if (xsrfRaw || sessionVal) {
+      session.cookieHeader = `XSRF-TOKEN=${session.xsrfRaw}; tmail_session=${session.sessionVal}`;
+    }
+
     const data = await res.json();
     const comp = data.components?.[0];
     if (!comp) throw new Error("Respons Livewire tidak valid");
@@ -192,9 +215,6 @@ require("dotenv").config();
     };
   }
 
-  /**
-   * Ambil snapshot frontend.app dari halaman /mailbox
-   */
   async function getMailboxSnapshot(session) {
     const res = await fetch(`${TMAIL_BASE}/mailbox`, {
       headers: {
@@ -204,6 +224,14 @@ require("dotenv").config();
       },
     });
     const html = await res.text();
+    
+    // Update cookies dari response mailbox juga
+    const { xsrfRaw, sessionVal } = extractCookies(res.headers);
+    if (xsrfRaw) { session.xsrfRaw = xsrfRaw; session.xsrfDecoded = decodeURIComponent(xsrfRaw); }
+    if (sessionVal) session.sessionVal = sessionVal;
+    if (xsrfRaw || sessionVal) {
+      session.cookieHeader = `XSRF-TOKEN=${session.xsrfRaw}; tmail_session=${session.sessionVal}`;
+    }
 
     const lwMatches = html.match(/wire:snapshot="([^"]+)"/g) || [];
     for (const m of lwMatches) {
@@ -222,12 +250,10 @@ require("dotenv").config();
     stopPolling(chatId);
     const state = getState(chatId);
 
-    // Inisialisasi sesi HTTP baru per user
     const session = await initSession();
     const username = generateHumanName();
     const chosenDomain = domain || randomDomain();
 
-    // Panggil Livewire create
     const result = await livewireUpdate(
       session,
       session.snapshot,
@@ -237,31 +263,31 @@ require("dotenv").config();
     );
 
     const email = result.snapshot.data?.email;
+    console.log(`[createEmail] email=${email} user=${username} domain=${chosenDomain}`);
     if (!email) return { success: false, message: "Gagal membuat email" };
 
-    // Simpan state
     state.email = email;
     state.session = session;
     state.seenMessageIds = new Set();
     state.lastOtp = null;
 
-    // Mulai auto polling
     startAutoPolling(chatId, email);
-
     return { success: true, email };
   }
 
   // ============================================================
-  //  CEK INBOX (ambil pesan dari Livewire frontend.app)
+  //  CEK INBOX
   // ============================================================
   async function fetchInbox(chatId) {
     const state = getState(chatId);
     if (!state.email || !state.session) return { success: false, messages: [] };
 
     try {
-      // Perbarui snapshot frontend.app dari halaman mailbox
       const appSnap = await getMailboxSnapshot(state.session);
-      if (!appSnap) return { success: false, messages: [] };
+      if (!appSnap) {
+        console.log(`[fetchInbox] chatId=${chatId} getMailboxSnapshot returned null`);
+        return { success: false, messages: [] };
+      }
 
       const result = await livewireUpdate(
         state.session,
@@ -273,26 +299,45 @@ require("dotenv").config();
 
       const rawMessages = result.snapshot.data?.messages;
       const messages = Array.isArray(rawMessages?.[0]) ? rawMessages[0] : [];
+      
+      if (messages.length > 0) {
+        console.log(`[fetchInbox] chatId=${chatId} found ${messages.length} msg(s). First msg keys: ${Object.keys(messages[0]).join(',')}`);
+        console.log(`[fetchInbox] First msg RAW: ${JSON.stringify(messages[0])}`);
+      }
+      
       return { success: true, messages };
     } catch (e) {
+      console.log(`[fetchInbox] ERROR chatId=${chatId}: ${e.message}`);
       return { success: false, messages: [] };
     }
   }
 
   // ============================================================
-  //  DETEKSI OTP DARI ISI PESAN
+  //  HELPER: Ambil field pesan dengan multiple fallback
+  // ============================================================
+  function getMsgField(msg, ...keys) {
+    for (const k of keys) {
+      if (msg[k] !== undefined && msg[k] !== null && msg[k] !== '') return msg[k];
+    }
+    return null;
+  }
+
+  // ============================================================
+  //  DETEKSI OTP
   // ============================================================
   function extractOtp(text) {
     if (!text) return null;
-    const patterns = [
-      /\b(\d{4,8})\b/,
-      /OTP[^\d]*(\d{4,8})/i,
-      /kode[^\d]*(\d{4,8})/i,
-      /code[^\d]*(\d{4,8})/i,
-      /verifikasi[^\d]*(\d{4,8})/i,
-      /verification[^\d]*(\d{4,8})/i,
+    // Prioritas: pola OTP eksplisit dulu
+    const explicit = [
+      /(?:OTP|kode|code|pin|password|token|verif(?:ication|ikasi)?)[^\d]{0,20}(\d{4,8})/i,
+      /(\d{4,8})(?:[^\d]{0,20}(?:OTP|kode|code|pin|verif))/i,
+      /\b(\d{6})\b/,   // 6-digit paling umum untuk OTP
+      /\b(\d{4})\b/,   // 4-digit
+      /\b(\d{8})\b/,   // 8-digit
+      /\b(\d{5})\b/,   // 5-digit
+      /\b(\d{7})\b/,   // 7-digit
     ];
-    for (const p of patterns) {
+    for (const p of explicit) {
       const m = text.match(p);
       if (m) return m[1];
     }
@@ -325,35 +370,45 @@ require("dotenv").config();
         if (!success) return;
 
         for (const msg of messages) {
-          const mid = msg.id || msg.email_id || `${msg.from}-${msg.subject}`;
-          if (!cs.seenMessageIds.has(mid)) {
-            cs.seenMessageIds.add(mid);
-            const time = msg.created_at || msg.date || msg.receivedAt;
+          // Coba semua kemungkinan field ID
+          const mid = getMsgField(msg, 'id','email_id','mail_id','uid','message_id') 
+            || `${getMsgField(msg,'from','sender','from_address','from_email') || ''}-${getMsgField(msg,'subject','title','email_subject') || ''}`;
+          
+          if (!cs.seenMessageIds.has(String(mid))) {
+            cs.seenMessageIds.add(String(mid));
+            
+            // Ambil fields dengan fallback lengkap
+            const from = getMsgField(msg, 'from','sender','from_address','from_email','reply_to') || '-';
+            const subject = getMsgField(msg, 'subject','title','email_subject','Subject') || '(tanpa subjek)';
+            const body = getMsgField(msg, 'body','html','text','body_html','html_body','text_body','content','message','plain') || '';
+            const time = getMsgField(msg, 'created_at','date','receivedAt','received_at','timestamp','time');
+
             await bot.telegram.sendMessage(chatId,
               `📩 <b>Email Baru Masuk!</b>\n\n` +
               `📧 <code>${email}</code>\n\n` +
-              `<b>Dari:</b> ${escapeHtml(msg.from || "-")}\n` +
-              `<b>Subjek:</b> ${escapeHtml(truncate(msg.subject || "(tanpa subjek)", 80))}\n` +
+              `<b>Dari:</b> ${escapeHtml(from)}\n` +
+              `<b>Subjek:</b> ${escapeHtml(truncate(subject, 80))}\n` +
               (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : ""),
               { parse_mode: "HTML", ...inboxKeyboard() }
             );
 
-            // Cek OTP dari subject + body
-            const bodyText = msg.body || msg.text || msg.content || "";
-            const otpText = `${msg.subject || ""} ${bodyText}`;
+            // Deteksi OTP dari subject + body
+            const otpText = `${subject} ${body}`;
             const otp = extractOtp(otpText);
             if (otp && otp !== cs.lastOtp) {
               cs.lastOtp = otp;
               await bot.telegram.sendMessage(chatId,
-                `🔔 <b>OTP Masuk!</b>\n\n` +
+                `🔔 <b>OTP Terdeteksi!</b>\n\n` +
                 `📧 <code>${email}</code>\n\n` +
-                `Tap kode untuk menyalin:\n<code>${otp}</code>`,
+                `Tap untuk menyalin:\n<code>${otp}</code>`,
                 { parse_mode: "HTML", ...inboxKeyboard() }
               );
             }
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        console.log(`[polling] ERROR chatId=${chatId}: ${e.message}`);
+      }
     }, pollInterval);
 
     state.pollingTimer = timer;
@@ -371,7 +426,7 @@ require("dotenv").config();
   }
 
   // ============================================================
-  //  REPLY KEYBOARD
+  //  KEYBOARDS
   // ============================================================
   function mainMenuKeyboard(userId) {
     const rows = [["🎲 Buat Email Baru", "📋 Pilih Domain"]];
@@ -407,215 +462,311 @@ require("dotenv").config();
   }
 
   // ============================================================
-  //  BOT
+  //  BOT INIT
   // ============================================================
   const bot = new Telegraf(BOT_TOKEN);
 
-  // --- Middleware: cek akses ---
+  // ============================================================
+  //  MIDDLEWARE: Cek akses
+  // ============================================================
   bot.use(async (ctx, next) => {
-    const userId = ctx.from?.id;
-    if (!userId) return;
-    if (isAuthorized(userId)) return next();
+    if (!ctx.from) return next();
+    const uid = ctx.from.id;
 
-    if (awaitingToken.has(userId) && ctx.message?.text) {
-      const token = ctx.message.text.trim().toUpperCase();
-      if (validateAndConsumeToken(token, userId)) {
-        awaitingToken.delete(userId);
-        return ctx.replyWithHTML(
-          `✅ <b>Token valid! Akses diberikan.</b>\n\nSelamat datang! Gunakan bot dengan bebas.`,
-          mainMenuKeyboard(userId)
+    if (awaitingToken.has(uid)) return next();
+    if (isAuthorized(uid)) return next();
+
+    if (ctx.message?.text?.toUpperCase().startsWith("TKN-")) {
+      return next();
+    }
+
+    await ctx.reply(
+      "⛔ Akses ditolak.\n\nKamu belum terdaftar. Masukkan token akses yang kamu dapat dari admin:",
+      Markup.forceReply()
+    );
+    awaitingToken.add(uid);
+  });
+
+  // ============================================================
+  //  COMMANDS
+  // ============================================================
+  bot.start(async (ctx) => {
+    const uid = ctx.from.id;
+    await ctx.reply(
+      `👋 Halo <b>${escapeHtml(ctx.from.first_name)}</b>!\n\n` +
+      `Bot email sementara siap digunakan.\n` +
+      `Tekan <b>Buat Email Baru</b> untuk mulai.`,
+      { parse_mode: "HTML", ...mainMenuKeyboard(uid) }
+    );
+  });
+
+  bot.help(async (ctx) => {
+    await ctx.reply(
+      "📖 <b>Panduan Bot Email Sementara</b>\n\n" +
+      "🎲 <b>Buat Email Baru</b> - Buat alamat email acak\n" +
+      "📋 <b>Pilih Domain</b> - Pilih domain untuk email baru\n" +
+      "📬 <b>Cek Inbox</b> - Lihat pesan masuk\n" +
+      "🔑 <b>Cek OTP</b> - Deteksi OTP dari pesan terakhir\n" +
+      "⛔ <b>Stop Notif</b> - Hentikan polling otomatis\n\n" +
+      "Bot akan otomatis memberi tahu kamu saat ada email masuk!",
+      { parse_mode: "HTML", ...mainMenuKeyboard(ctx.from.id) }
+    );
+  });
+
+  // ============================================================
+  //  HANDLER: Buat Email Baru
+  // ============================================================
+  async function handleCreateEmail(ctx, domain = null) {
+    const chatId = ctx.chat.id;
+    const msg = await ctx.reply("⏳ Membuat email baru...");
+
+    try {
+      const { success, email, message } = await createEmailForUser(chatId, domain);
+      await ctx.telegram.deleteMessage(chatId, msg.message_id).catch(() => {});
+
+      if (!success) {
+        await ctx.reply(`❌ ${message}`, mainMenuKeyboard(ctx.from.id));
+        return;
+      }
+
+      await ctx.reply(
+        `✅ <b>Email siap digunakan!</b>\n\n` +
+        `📧 <code>${email}</code>\n\n` +
+        `🔔 Notif OTP otomatis aktif.\n` +
+        `Bot akan memberi tahu saat ada email masuk.`,
+        { parse_mode: "HTML", ...inboxKeyboard() }
+      );
+    } catch (e) {
+      console.log(`[handleCreateEmail] ERROR: ${e.message}`);
+      await ctx.telegram.deleteMessage(chatId, msg.message_id).catch(() => {});
+      await ctx.reply(`❌ Gagal membuat email: ${e.message}`, mainMenuKeyboard(ctx.from.id));
+    }
+  }
+
+  // ============================================================
+  //  HANDLER: Cek Inbox
+  // ============================================================
+  async function handleCheckInbox(ctx) {
+    const chatId = ctx.chat.id;
+    const state = getState(chatId);
+
+    if (!state.email) {
+      await ctx.reply("❌ Belum ada email aktif. Buat email baru dulu.", mainMenuKeyboard(ctx.from.id));
+      return;
+    }
+
+    const msg = await ctx.reply("⏳ Memeriksa inbox...");
+    const { success, messages } = await fetchInbox(chatId);
+    await ctx.telegram.deleteMessage(chatId, msg.message_id).catch(() => {});
+
+    if (!success) {
+      await ctx.reply("❌ Gagal mengambil inbox. Coba lagi.", inboxKeyboard());
+      return;
+    }
+
+    if (messages.length === 0) {
+      await ctx.reply(
+        `📭 <b>Inbox Kosong</b>\n\n📧 <code>${state.email}</code>\n\nBelum ada email masuk.`,
+        { parse_mode: "HTML", ...inboxKeyboard() }
+      );
+      return;
+    }
+
+    for (const msg of messages) {
+      const from = getMsgField(msg, 'from','sender','from_address','from_email','reply_to') || '-';
+      const subject = getMsgField(msg, 'subject','title','email_subject','Subject') || '(tanpa subjek)';
+      const body = getMsgField(msg, 'body','html','text','body_html','html_body','text_body','content','message','plain') || '';
+      const time = getMsgField(msg, 'created_at','date','receivedAt','received_at','timestamp','time');
+
+      await ctx.reply(
+        `📩 <b>Email</b>\n\n` +
+        `<b>Dari:</b> ${escapeHtml(from)}\n` +
+        `<b>Subjek:</b> ${escapeHtml(truncate(subject, 80))}\n` +
+        (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : "") +
+        (body ? `\n<b>Isi:</b>\n${escapeHtml(truncate(body, 500))}` : ""),
+        { parse_mode: "HTML", ...inboxKeyboard() }
+      );
+    }
+  }
+
+  // ============================================================
+  //  HANDLER: Cek OTP
+  // ============================================================
+  async function handleCheckOtp(ctx) {
+    const chatId = ctx.chat.id;
+    const state = getState(chatId);
+
+    if (!state.email) {
+      await ctx.reply("❌ Belum ada email aktif.", mainMenuKeyboard(ctx.from.id));
+      return;
+    }
+
+    const msg = await ctx.reply("⏳ Mencari OTP...");
+    const { success, messages } = await fetchInbox(chatId);
+    await ctx.telegram.deleteMessage(chatId, msg.message_id).catch(() => {});
+
+    if (!success || messages.length === 0) {
+      await ctx.reply(
+        `🔍 <b>Belum ada OTP di inbox</b>\n\n📧 <code>${state.email}</code>\n\nBelum ada email masuk.`,
+        { parse_mode: "HTML", ...inboxKeyboard() }
+      );
+      return;
+    }
+
+    let foundOtp = null;
+    for (const m of [...messages].reverse()) {
+      const subject = getMsgField(m, 'subject','title','email_subject','Subject') || '';
+      const body = getMsgField(m, 'body','html','text','body_html','html_body','text_body','content','message','plain') || '';
+      const combined = `${subject} ${body}`;
+      const otp = extractOtp(combined);
+      if (otp) { foundOtp = otp; break; }
+    }
+
+    if (foundOtp) {
+      state.lastOtp = foundOtp;
+      await ctx.reply(
+        `🔑 <b>OTP Ditemukan!</b>\n\n` +
+        `📧 <code>${state.email}</code>\n\n` +
+        `Tap untuk menyalin:\n<code>${foundOtp}</code>`,
+        { parse_mode: "HTML", ...inboxKeyboard() }
+      );
+    } else {
+      await ctx.reply(
+        `🔍 <b>Belum ada OTP di inbox</b>\n\n` +
+        `📧 <code>${state.email}</code>\n\n` +
+        `Ada ${messages.length} pesan tapi tidak ditemukan kode OTP.`,
+        { parse_mode: "HTML", ...inboxKeyboard() }
+      );
+    }
+  }
+
+  // ============================================================
+  //  TEXT HANDLER
+  // ============================================================
+  bot.on("text", async (ctx) => {
+    const uid = ctx.from.id;
+    const chatId = ctx.chat.id;
+    const text = ctx.message.text.trim();
+
+    // Cek token
+    if (!isAuthorized(uid)) {
+      const token = text.toUpperCase();
+      if (validateAndConsumeToken(token, uid)) {
+        awaitingToken.delete(uid);
+        await ctx.reply(
+          "✅ Token valid! Selamat datang.\n\nKamu sekarang bisa menggunakan bot.",
+          mainMenuKeyboard(uid)
         );
       } else {
-        return ctx.replyWithHTML(
-          `❌ <b>Token tidak valid atau sudah dipakai.</b>\n\nMinta token baru ke admin.`
-        );
+        await ctx.reply("❌ Token tidak valid atau sudah digunakan. Minta token baru ke admin.");
+      }
+      return;
+    }
+
+    // Main menu
+    if (text === "🎲 Buat Email Baru" || text === "🆕 Buat Email Baru") {
+      return handleCreateEmail(ctx);
+    }
+    if (text === "📋 Pilih Domain" || text === "📋 Ganti Domain") {
+      await ctx.reply(
+        "📋 <b>Pilih domain:</b>\n\nPilih domain yang ingin digunakan:",
+        { parse_mode: "HTML", ...domainKeyboard() }
+      );
+      return;
+    }
+    if (text === "📬 Cek Inbox") {
+      return handleCheckInbox(ctx);
+    }
+    if (text === "🔑 Cek OTP") {
+      return handleCheckOtp(ctx);
+    }
+    if (text === "⛔ Stop Notif") {
+      stopPolling(chatId);
+      const state = getState(chatId);
+      await ctx.reply(
+        `⛔ Notifikasi otomatis dihentikan.\n` +
+        (state.email ? `📧 Email: <code>${state.email}</code>` : ""),
+        { parse_mode: "HTML", ...mainMenuKeyboard(uid) }
+      );
+      return;
+    }
+    if (text === "🏠 Menu Utama") {
+      const state = getState(chatId);
+      let info = "";
+      if (state.email) info = `\n\n📧 Email aktif: <code>${state.email}</code>`;
+      await ctx.reply(
+        `🏠 <b>Menu Utama</b>${info}`,
+        { parse_mode: "HTML", ...mainMenuKeyboard(uid) }
+      );
+      return;
+    }
+
+    // Domain selection
+    if (text.startsWith("@")) {
+      const domain = text.slice(1);
+      if (FREE_DOMAINS.includes(domain)) {
+        return handleCreateEmail(ctx, domain);
       }
     }
 
-    await ctx.replyWithHTML(
-      `🔒 <b>Bot ini bersifat pribadi.</b>\n\n` +
-      `Untuk menggunakan bot ini, kamu memerlukan <b>token akses</b> dari admin.\n\n` +
-      `Kirimkan tokennya sekarang (format: <code>TKN-XXXX-XXXX</code>).`,
-      Markup.removeKeyboard()
-    );
-    awaitingToken.add(userId);
-  });
-
-  // --- /start ---
-  bot.start((ctx) => {
-    stopPolling(ctx.chat.id);
-    ctx.replyWithHTML(
-      `👋 <b>Selamat datang di Temp Mail Bot!</b>\n\n` +
-      `Buat inbox sementara instan — OTP masuk langsung dikirim ke sini otomatis.\n\n` +
-      `📌 <i>Didukung oleh free-temp-mail.eu.org</i>`,
-      mainMenuKeyboard(ctx.from.id)
-    );
-  });
-
-  // ============================================================
-  //  HANDLER TOMBOL
-  // ============================================================
-
-  bot.hears("🏠 Menu Utama", (ctx) => {
-    ctx.replyWithHTML(`🏠 <b>Menu Utama</b>`, mainMenuKeyboard(ctx.from.id));
-  });
-
-  bot.hears(["🎲 Buat Email Baru", "🆕 Buat Email Baru"], async (ctx) => {
-    await ctx.replyWithHTML(`⏳ <i>Membuat email baru...</i>`);
-    const r = await createEmailForUser(ctx.chat.id);
-    if (!r.success) return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard(ctx.from.id));
-    ctx.replyWithHTML(
-      `✅ <b>Email siap digunakan!</b>\n\n` +
-      `📧 <code>${r.email}</code>\n\n` +
-      `🔔 <i>Notif OTP otomatis aktif — kamu akan langsung diberitahu saat ada email atau OTP masuk.</i>`,
-      inboxKeyboard()
-    );
-  });
-
-  bot.hears(["📋 Pilih Domain", "📋 Ganti Domain"], (ctx) => {
-    ctx.replyWithHTML(`📋 <b>Pilih domain:</b>`, domainKeyboard());
-  });
-
-  FREE_DOMAINS.forEach((domain) => {
-    bot.hears(`@${domain}`, async (ctx) => {
-      await ctx.replyWithHTML(`⏳ <i>Membuat email dengan domain @${domain}...</i>`);
-      const r = await createEmailForUser(ctx.chat.id, domain);
-      if (!r.success) return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard(ctx.from.id));
-      ctx.replyWithHTML(
-        `✅ <b>Email siap digunakan!</b>\n\n` +
-        `📧 <code>${r.email}</code>\n\n` +
-        `🔔 <i>Notif OTP otomatis aktif.</i>`,
-        inboxKeyboard()
-      );
-    });
-  });
-
-  // Cek Inbox (manual)
-  bot.hears("📬 Cek Inbox", async (ctx) => {
-    const state = getState(ctx.chat.id);
-    if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
-
-    await ctx.replyWithHTML(`⏳ <i>Mengecek inbox...</i>`);
-    const { success, messages } = await fetchInbox(ctx.chat.id);
-
-    if (!success || messages.length === 0) {
-      return ctx.replyWithHTML(
-        `📭 <b>Inbox kosong</b>\n\n📧 <code>${state.email}</code>\n\nBelum ada email masuk.`,
-        inboxKeyboard()
-      );
+    // Admin panel
+    if (text === "⚙️ Panel Admin") {
+      if (!isAdmin(uid)) { await ctx.reply("⛔ Bukan admin."); return; }
+      await ctx.reply("⚙️ <b>Panel Admin</b>", { parse_mode: "HTML", ...adminKeyboard() });
+      return;
     }
 
-    let text = `📬 <b>${messages.length} pesan masuk</b>\n\n📧 <code>${state.email}</code>\n\n`;
-    messages.slice(0, 5).forEach((msg, i) => {
-      text += `<b>${i + 1}.</b> Dari: <i>${escapeHtml(msg.from || "-")}</i>\n`;
-      text += `   Subjek: ${escapeHtml(truncate(msg.subject || "(tanpa subjek)", 60))}\n`;
-      const time = msg.created_at || msg.date || msg.receivedAt;
-      if (time) text += `   ${new Date(time).toLocaleString("id-ID")}\n`;
-      text += "\n";
-    });
-    ctx.replyWithHTML(text, inboxKeyboard());
-  });
-
-  // Cek OTP (manual)
-  bot.hears("🔑 Cek OTP", async (ctx) => {
-    const state = getState(ctx.chat.id);
-    if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
-
-    await ctx.replyWithHTML(`⏳ <i>Mencari OTP...</i>`);
-    const { success, messages } = await fetchInbox(ctx.chat.id);
-
-    if (!success || messages.length === 0) {
-      return ctx.replyWithHTML(
-        `🔍 <b>Belum ada OTP</b>\n\n📧 <code>${state.email}</code>\n\nTenang, notif OTP otomatis sudah aktif.`,
-        inboxKeyboard()
+    if (text === "🔑 Generate Token" && isAdmin(uid)) {
+      const token = generateToken();
+      accessTokens.set(token, { createdAt: Date.now(), usedBy: null });
+      await ctx.reply(
+        `✅ Token baru:\n\n<code>${token}</code>\n\nBagikan ke pengguna yang ingin diberi akses.`,
+        { parse_mode: "HTML", ...adminKeyboard() }
       );
+      return;
     }
 
-    // Cari OTP dari semua pesan
-    for (const msg of messages) {
-      const bodyText = msg.body || msg.text || msg.content || "";
-      const otpText = `${msg.subject || ""} ${bodyText}`;
-      const otp = extractOtp(otpText);
-      if (otp) {
-        return ctx.replyWithHTML(
-          `🔑 <b>OTP Ditemukan!</b>\n\n📧 <code>${state.email}</code>\n\nKode OTP:\n<code>${otp}</code>\n\nTap kode untuk menyalin.`,
-          inboxKeyboard()
-        );
+    if (text === "📋 Lihat Token" && isAdmin(uid)) {
+      if (accessTokens.size === 0) {
+        await ctx.reply("📋 Belum ada token.", adminKeyboard());
+        return;
       }
+      const lines = [];
+      for (const [t, info] of accessTokens) {
+        lines.push(`<code>${t}</code> - ${info.usedBy ? `Dipakai oleh ${info.usedBy}` : "Belum dipakai"}`);
+      }
+      await ctx.reply(`📋 <b>Daftar Token:</b>\n\n${lines.join("\n")}`, { parse_mode: "HTML", ...adminKeyboard() });
+      return;
     }
 
-    ctx.replyWithHTML(
-      `🔍 <b>Belum ada OTP di inbox</b>\n\n📧 <code>${state.email}</code>\n\nAda ${messages.length} pesan tapi tidak ditemukan kode OTP.`,
-      inboxKeyboard()
-    );
-  });
+    if (text === "👥 Lihat User" && isAdmin(uid)) {
+      const users = [...authorizedUsers];
+      await ctx.reply(`👥 <b>User Terdaftar (${users.length}):</b>\n\n${users.map(u => `<code>${u}</code>`).join("\n")}`, { parse_mode: "HTML", ...adminKeyboard() });
+      return;
+    }
 
-  // Stop Notif
-  bot.hears("⛔ Stop Notif", (ctx) => {
-    stopPolling(ctx.chat.id);
-    ctx.replyWithHTML(
-      `⛔ <b>Notifikasi otomatis dihentikan.</b>\n\nEmail kamu masih aktif, tapi notif tidak akan masuk lagi.\nTekan "Cek Inbox" untuk cek manual.`,
-      inboxKeyboard()
-    );
+    if (text === "🚫 Cabut Token" && isAdmin(uid)) {
+      await ctx.reply("Kirim token yang ingin dicabut:", Markup.forceReply());
+      return;
+    }
   });
 
   // ============================================================
-  //  PANEL ADMIN
+  //  ERROR HANDLING
   // ============================================================
-  bot.hears("⚙️ Panel Admin", (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    ctx.replyWithHTML(`⚙️ <b>Panel Admin</b>`, adminKeyboard());
-  });
-
-  bot.hears("🔑 Generate Token", (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const token = generateToken();
-    accessTokens.set(token, { createdAt: Date.now(), usedBy: null });
-    ctx.replyWithHTML(
-      `✅ <b>Token baru dibuat:</b>\n\n<code>${token}</code>\n\nBagikan token ini ke pengguna yang ingin diberikan akses.`,
-      adminKeyboard()
-    );
-  });
-
-  bot.hears("📋 Lihat Token", (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    if (accessTokens.size === 0) return ctx.replyWithHTML(`📋 Belum ada token.`, adminKeyboard());
-    let text = `📋 <b>Daftar Token:</b>\n\n`;
-    accessTokens.forEach((v, k) => {
-      text += `<code>${k}</code> — ${v.usedBy ? `✅ dipakai oleh ${v.usedBy}` : "⏳ belum dipakai"}\n`;
-    });
-    ctx.replyWithHTML(text, adminKeyboard());
-  });
-
-  bot.hears("🚫 Cabut Token", (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    ctx.replyWithHTML(`Kirim token yang ingin dicabut:`, adminKeyboard());
-  });
-
-  bot.hears("👥 Lihat User", (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const users = [...authorizedUsers].join("\n");
-    ctx.replyWithHTML(`👥 <b>Pengguna aktif:</b>\n\n${users}`, adminKeyboard());
+  bot.catch((err, ctx) => {
+    console.log(`[bot.catch] Error untuk update ${ctx.updateType}: ${err.message}`);
   });
 
   // ============================================================
-  //  INFO EMAIL AKTIF
+  //  START
   // ============================================================
-  bot.command("email", (ctx) => {
-    const state = getState(ctx.chat.id);
-    if (!state.email) return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard(ctx.from.id));
-    ctx.replyWithHTML(
-      `📧 <b>Email aktif kamu:</b>\n\n<code>${state.email}</code>\n\nTap untuk menyalin.`,
-      inboxKeyboard()
-    );
+  bot.launch().then(() => {
+    console.log("✅ Bot started successfully");
+  }).catch(err => {
+    console.log(`❌ Bot failed to start: ${err.message}`);
+    process.exit(1);
   });
-
-  // ============================================================
-  //  START BOT
-  // ============================================================
-  bot.launch()
-    .then(() => console.log("Bot berjalan..."))
-    .catch((err) => { console.error("Gagal menjalankan bot:", err); process.exit(1); });
 
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
