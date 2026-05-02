@@ -4,7 +4,7 @@ const { Telegraf, Markup } = require("telegraf");
 const fetch = require("node-fetch");
 
 // ============================================================
-//  KONFIGURASI — edit di sini atau lewat environment variable
+//  KONFIGURASI
 // ============================================================
 const BOT_TOKEN = process.env.BOT_TOKEN || "8673639594:AAELpPmuSEm2DT0JiNUQPOpHumY4X4QKnZk";
 const FCE_API_KEY =
@@ -12,7 +12,7 @@ const FCE_API_KEY =
   "fce_65c103c6e058441f729fa73515bde90dd3fa6f3eaaaabff51ee09685ef133829";
 const FCE_BASE = "https://api2.freecustom.email/v1";
 
-// Domain gratis yang tersedia
+// Domain gratis
 const FREE_DOMAINS = [
   "ditube.info",
   "ditplay.info",
@@ -28,10 +28,77 @@ const FREE_DOMAINS = [
 ];
 
 // ============================================================
-//  STATE PER USER (in-memory)
+//  NAMA MANUSIA (Indo + Internasional)
+// ============================================================
+const FIRST_NAMES = [
+  // Indonesia
+  "budi","siti","ahmad","dewi","rizki","andi","fitri","hendra","maya","yusuf",
+  "rudi","lina","dani","bagas","ayu","dian","rama","sari","wahyu","agus",
+  "rina","joko","nurul","fauzi","citra","bayu","indah","teguh","fajar","reza",
+  "nisa","irwan","putri","hadi","vina","dedy","mira","ferdi","gilang","taufik",
+  "rini","kevin","nanda","haris","zahra","ilham","wulan","andre","siska","bimo",
+  "laila","dimas","tiara","arif","elsa","yoga","anggi","deva","nadia","raka",
+  "selvi","guntur","yeni","aldi","tari","fandi","rian","desy","erwin","kiki",
+  // Internasional
+  "john","sarah","michael","emma","david","olivia","james","sophia","robert","ava",
+  "william","charlotte","thomas","grace","harry","alice","ryan","megan","kevin","laura",
+  "daniel","jessica","chris","amanda","mark","rachel","brian","melissa","paul","emily",
+  "jason","ashley","eric","stephanie","adam","nicole","joshua","brittany","stephen","samantha",
+  "jake","natalie","kyle","hannah","nathan","victoria","tyler","madison","sean","alexis",
+];
+
+const LAST_NAMES = [
+  // Indonesia
+  "santoso","kusuma","pratama","wijaya","setiawan","rahayu","permata","lestari",
+  "hidayat","putra","saputra","nugroho","kurniawan","handoko","wicaksono","susanto",
+  "purnama","pranata","hakim","firmansyah","gunawan","halim","budiman","suharto",
+  "mulyadi","hartono","sugiarto","surya","wahyudi","ramadan","salim","iskandar",
+  // Internasional
+  "smith","johnson","brown","davis","wilson","anderson","taylor","thomas","jackson",
+  "white","harris","martin","thompson","garcia","martinez","robinson","clark","lewis",
+  "walker","hall","allen","young","king","wright","scott","green","baker","adams",
+  "nelson","hill","carter","mitchell","perez","roberts","turner","phillips","campbell",
+];
+
+// Nama yang sudah dipakai (global, tidak akan berulang)
+const usedNames = new Set();
+
+function generateHumanName() {
+  const maxTry = 300;
+  for (let i = 0; i < maxTry; i++) {
+    const first = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)];
+    const last = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)];
+
+    // Format acak: budi.santoso / budi_santoso / budisant / budi.s92
+    const formats = [
+      `${first}.${last}`,
+      `${first}_${last}`,
+      `${first}${last}`,
+      `${first}.${last[0]}${String(Math.floor(Math.random() * 90) + 10)}`,
+      `${first}${String(Math.floor(Math.random() * 900) + 100)}`,
+      `${first}.${last}${String(Math.floor(Math.random() * 90) + 10)}`,
+    ];
+
+    const name = formats[Math.floor(Math.random() * formats.length)];
+
+    if (!usedNames.has(name)) {
+      usedNames.add(name);
+      return name;
+    }
+  }
+  // Fallback dengan timestamp unik
+  const ts = Date.now().toString(36);
+  return `user.${ts}`;
+}
+
+function randomDomain() {
+  return FREE_DOMAINS[Math.floor(Math.random() * FREE_DOMAINS.length)];
+}
+
+// ============================================================
+//  STATE PER USER
 // ============================================================
 const userState = new Map();
-// { chatId: { email, pollingTimer } }
 
 function getState(chatId) {
   if (!userState.has(chatId)) userState.set(chatId, {});
@@ -47,7 +114,7 @@ function stopPolling(chatId) {
 }
 
 // ============================================================
-//  HELPER: FCE API
+//  FCE API
 // ============================================================
 async function fcePost(path, body) {
   const res = await fetch(`${FCE_BASE}${path}`, {
@@ -68,19 +135,23 @@ async function fceGet(path) {
   return res.json();
 }
 
-function randomName(length = 8) {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  return Array.from({ length }, () =>
-    chars.charAt(Math.floor(Math.random() * chars.length))
-  ).join("");
+// ============================================================
+//  UTIL
+// ============================================================
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
-function randomDomain() {
-  return FREE_DOMAINS[Math.floor(Math.random() * FREE_DOMAINS.length)];
+function truncate(str, max = 100) {
+  const s = String(str || "");
+  return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
 // ============================================================
-//  KEYBOARD HELPERS
+//  KEYBOARD
 // ============================================================
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
@@ -95,7 +166,7 @@ function inboxKeyboard() {
       Markup.button.callback("📬 Cek Inbox", "check_inbox"),
       Markup.button.callback("🔑 Cek OTP", "check_otp"),
     ],
-    [Markup.button.callback("🔄 Auto OTP (5 menit)", "auto_otp")],
+    [Markup.button.callback("🔔 Auto Notif (10 menit)", "auto_otp")],
     [Markup.button.callback("🆕 Buat Email Baru", "create_email")],
     [Markup.button.callback("📋 Ganti Domain", "choose_domain")],
   ]);
@@ -109,18 +180,47 @@ function domainKeyboard() {
   return Markup.inlineKeyboard(buttons);
 }
 
+function stopKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("⛔ Stop Auto Notif", "stop_auto_otp")],
+  ]);
+}
+
+// ============================================================
+//  BUAT EMAIL (shared logic)
+// ============================================================
+async function createEmail(ctx, domain) {
+  stopPolling(ctx.chat.id);
+
+  const name = generateHumanName();
+  const chosenDomain = domain || randomDomain();
+  const email = `${name}@${chosenDomain}`;
+
+  const result = await fcePost("/inboxes", { inbox: email });
+
+  if (!result.success) {
+    return { success: false, message: result.message };
+  }
+
+  const state = getState(ctx.chat.id);
+  state.email = email;
+  state.seenMessageIds = new Set();
+  state.lastOtp = null;
+
+  return { success: true, email };
+}
+
 // ============================================================
 //  BOT
 // ============================================================
 const bot = new Telegraf(BOT_TOKEN);
 
-// --- /start ---
 bot.start((ctx) => {
   stopPolling(ctx.chat.id);
   ctx.replyWithHTML(
-    `👋 <b>Selamat datang di Email Temp Bot!</b>\n\n` +
-      `Bot ini menggunakan <b>FreeCustom.Email</b> untuk membuat inbox sementara.\n\n` +
-      `📌 <i>Email bertahan ±24 jam • OTP diekstrak otomatis</i>`,
+    `👋 <b>Selamat datang di Temp Mail Bot!</b>\n\n` +
+      `Buat inbox sementara instan, terima email &amp; OTP otomatis.\n\n` +
+      `📌 <i>Email bertahan ±24 jam</i>`,
     mainMenuKeyboard()
   );
 });
@@ -128,27 +228,14 @@ bot.start((ctx) => {
 // --- Buat email acak ---
 bot.action("create_email", async (ctx) => {
   await ctx.answerCbQuery();
-  stopPolling(ctx.chat.id);
-
-  const name = randomName();
-  const domain = randomDomain();
-  const email = `${name}@${domain}`;
-
-  const result = await fcePost("/inboxes", { inbox: email });
-
-  if (!result.success) {
-    return ctx.replyWithHTML(
-      `❌ Gagal membuat email: ${result.message}`,
-      mainMenuKeyboard()
-    );
+  const r = await createEmail(ctx);
+  if (!r.success) {
+    return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard());
   }
-
-  getState(ctx.chat.id).email = email;
-
   await ctx.editMessageText(
-    `✅ <b>Email berhasil dibuat!</b>\n\n` +
-      `📧 <code>${email}</code>\n\n` +
-      `Klik email di atas untuk menyalinnya. Pilih aksi:`,
+    `✅ <b>Email siap digunakan!</b>\n\n` +
+      `📧 <code>${r.email}</code>\n\n` +
+      `Tap email di atas untuk menyalin. Pilih aksi:`,
     { parse_mode: "HTML", ...inboxKeyboard() }
   );
 });
@@ -157,46 +244,31 @@ bot.action("create_email", async (ctx) => {
 bot.action("choose_domain", async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.editMessageText(
-    `📋 <b>Pilih domain untuk email kamu:</b>\n\n` +
-      `Nama username akan dibuat secara acak.`,
+    `📋 <b>Pilih domain:</b>`,
     { parse_mode: "HTML", ...domainKeyboard() }
   );
 });
 
-// --- Pilih domain spesifik ---
 FREE_DOMAINS.forEach((domain) => {
   bot.action(`domain_${domain}`, async (ctx) => {
     await ctx.answerCbQuery();
-    stopPolling(ctx.chat.id);
-
-    const name = randomName();
-    const email = `${name}@${domain}`;
-
-    const result = await fcePost("/inboxes", { inbox: email });
-
-    if (!result.success) {
-      return ctx.replyWithHTML(
-        `❌ Gagal membuat email: ${result.message}`,
-        mainMenuKeyboard()
-      );
+    const r = await createEmail(ctx, domain);
+    if (!r.success) {
+      return ctx.replyWithHTML(`❌ Gagal: ${r.message}`, mainMenuKeyboard());
     }
-
-    getState(ctx.chat.id).email = email;
-
     await ctx.editMessageText(
-      `✅ <b>Email berhasil dibuat!</b>\n\n` +
-        `📧 <code>${email}</code>\n\n` +
-        `Klik email di atas untuk menyalinnya. Pilih aksi:`,
+      `✅ <b>Email siap digunakan!</b>\n\n` +
+        `📧 <code>${r.email}</code>\n\n` +
+        `Tap email di atas untuk menyalin. Pilih aksi:`,
       { parse_mode: "HTML", ...inboxKeyboard() }
     );
   });
 });
 
-// --- Kembali ke menu utama ---
 bot.action("back_main", async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.editMessageText(
-    `🏠 <b>Menu Utama</b>\n\nPilih aksi:`,
+    `🏠 <b>Menu Utama</b>`,
     { parse_mode: "HTML", ...mainMenuKeyboard() }
   );
 });
@@ -207,147 +279,162 @@ bot.action("check_inbox", async (ctx) => {
   const state = getState(ctx.chat.id);
 
   if (!state.email) {
-    return ctx.reply("❌ Belum ada email aktif. Buat email dulu!", mainMenuKeyboard());
+    return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard());
   }
 
   const result = await fceGet(`/inboxes/${state.email}/messages`);
 
   if (!result.success || result.count === 0) {
     return ctx.replyWithHTML(
-      `📭 <b>Inbox kosong</b>\n\n` +
-        `📧 <code>${state.email}</code>\n\n` +
-        `Belum ada email masuk.`,
+      `📭 <b>Inbox kosong</b>\n\n📧 <code>${state.email}</code>\n\nBelum ada email masuk.`,
       inboxKeyboard()
     );
   }
 
-  let text = `📬 <b>Inbox: ${result.count} pesan</b>\n\n📧 <code>${state.email}</code>\n\n`;
-
+  let text = `📬 <b>${result.count} pesan masuk</b>\n\n📧 <code>${state.email}</code>\n\n`;
   result.data.slice(0, 5).forEach((msg, i) => {
-    text += `${i + 1}. <b>Dari:</b> ${escapeHtml(msg.from || "-")}\n`;
-    text += `   <b>Subjek:</b> ${escapeHtml(msg.subject || "(tanpa subjek)")}\n`;
-    text += `   <b>Waktu:</b> ${new Date(msg.receivedAt || msg.date).toLocaleString("id-ID")}\n\n`;
+    text += `<b>${i + 1}.</b> Dari: <i>${escapeHtml(msg.from || "-")}</i>\n`;
+    text += `   Subjek: ${escapeHtml(truncate(msg.subject || "(tanpa subjek)", 60))}\n`;
+    const time = msg.receivedAt || msg.date;
+    text += `   ${time ? new Date(time).toLocaleString("id-ID") : ""}\n\n`;
   });
 
   ctx.replyWithHTML(text, inboxKeyboard());
 });
 
-// --- Cek OTP ---
+// --- Cek OTP manual ---
 bot.action("check_otp", async (ctx) => {
   await ctx.answerCbQuery("Mencari OTP...");
   const state = getState(ctx.chat.id);
 
   if (!state.email) {
-    return ctx.reply("❌ Belum ada email aktif. Buat email dulu!", mainMenuKeyboard());
+    return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard());
   }
 
   const result = await fceGet(`/inboxes/${state.email}/otp`);
 
   if (!result.success || !result.otp) {
     return ctx.replyWithHTML(
-      `🔍 <b>Tidak ada OTP ditemukan</b>\n\n` +
-        `📧 <code>${state.email}</code>\n\n` +
-        `Coba gunakan <b>Auto OTP</b> agar bot otomatis mendeteksi saat OTP masuk.`,
+      `🔍 <b>Belum ada OTP</b>\n\n📧 <code>${state.email}</code>\n\n` +
+        `Gunakan <b>🔔 Auto Notif</b> agar bot otomatis kirim OTP saat masuk.`,
       inboxKeyboard()
     );
   }
 
   ctx.replyWithHTML(
-    `🔑 <b>OTP Ditemukan!</b>\n\n` +
-      `📧 <code>${state.email}</code>\n\n` +
-      `Kode OTP kamu:\n<code>${result.otp}</code>\n\n` +
-      `Klik kode di atas untuk menyalin.`,
+    `🔑 <b>OTP Ditemukan!</b>\n\n📧 <code>${state.email}</code>\n\n` +
+      `Kode OTP:\n<code>${result.otp}</code>\n\n` +
+      `Tap kode untuk menyalin.`,
     inboxKeyboard()
   );
 });
 
-// --- Auto OTP ---
+// --- Auto Notif: deteksi email masuk + OTP otomatis ---
 bot.action("auto_otp", async (ctx) => {
-  await ctx.answerCbQuery("Auto OTP aktif!");
+  await ctx.answerCbQuery("Auto Notif aktif!");
   const state = getState(ctx.chat.id);
 
   if (!state.email) {
-    return ctx.reply("❌ Belum ada email aktif. Buat email dulu!", mainMenuKeyboard());
+    return ctx.replyWithHTML(`❌ Belum ada email aktif.`, mainMenuKeyboard());
   }
 
   stopPolling(ctx.chat.id);
+  state.seenMessageIds = state.seenMessageIds || new Set();
+  state.lastOtp = state.lastOtp || null;
 
   const email = state.email;
   const chatId = ctx.chat.id;
-  const maxDuration = 5 * 60 * 1000; // 5 menit
-  const interval = 5 * 1000; // 5 detik
+  const maxDuration = 10 * 60 * 1000; // 10 menit
+  const pollInterval = 4 * 1000;       // 4 detik
   const startTime = Date.now();
 
   await ctx.replyWithHTML(
-    `🔄 <b>Auto OTP Aktif</b>\n\n` +
-      `📧 <code>${email}</code>\n\n` +
-      `Bot akan otomatis mengirim OTP saat email masuk.\n` +
-      `⏱ Berlaku selama <b>5 menit</b>.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("⛔ Stop Auto OTP", "stop_auto_otp")],
-    ])
+    `🔔 <b>Auto Notif Aktif</b>\n\n📧 <code>${email}</code>\n\n` +
+      `Bot akan kirim notif otomatis:\n` +
+      `• Saat ada email baru masuk\n` +
+      `• Saat OTP terdeteksi (langsung bisa dicopy)\n\n` +
+      `⏱ Aktif selama <b>10 menit</b>`,
+    stopKeyboard()
   );
 
   const timer = setInterval(async () => {
+    // Hentikan otomatis setelah 10 menit
     if (Date.now() - startTime > maxDuration) {
       stopPolling(chatId);
       bot.telegram.sendMessage(
         chatId,
-        `⏰ Auto OTP selesai (5 menit habis).\n\n📧 <code>${email}</code>`,
+        `⏰ <b>Auto Notif selesai</b> (10 menit habis)\n\n📧 <code>${email}</code>`,
         { parse_mode: "HTML", ...inboxKeyboard() }
       );
       return;
     }
 
     try {
-      const result = await fceGet(`/inboxes/${email}/otp`);
-      if (result.success && result.otp) {
+      const currentState = getState(chatId);
+      // Pastikan masih email yang sama (user belum ganti email)
+      if (currentState.email !== email) {
         stopPolling(chatId);
-        bot.telegram.sendMessage(
+        return;
+      }
+
+      // --- Cek pesan baru ---
+      const msgResult = await fceGet(`/inboxes/${email}/messages`);
+      if (msgResult.success && msgResult.data && msgResult.data.length > 0) {
+        for (const msg of msgResult.data) {
+          const msgId = msg.id || msg.messageId || `${msg.from}-${msg.subject}-${msg.receivedAt}`;
+          if (!currentState.seenMessageIds.has(msgId)) {
+            currentState.seenMessageIds.add(msgId);
+
+            // Kirim notif email baru
+            const time = msg.receivedAt || msg.date;
+            await bot.telegram.sendMessage(
+              chatId,
+              `📩 <b>Email Baru Masuk!</b>\n\n` +
+                `📧 <code>${email}</code>\n\n` +
+                `<b>Dari:</b> ${escapeHtml(msg.from || "-")}\n` +
+                `<b>Subjek:</b> ${escapeHtml(truncate(msg.subject || "(tanpa subjek)", 80))}\n` +
+                (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : "") +
+                `\n🔍 <i>Sedang mencari OTP...</i>`,
+              { parse_mode: "HTML" }
+            );
+          }
+        }
+      }
+
+      // --- Cek OTP baru ---
+      const otpResult = await fceGet(`/inboxes/${email}/otp`);
+      if (otpResult.success && otpResult.otp && otpResult.otp !== currentState.lastOtp) {
+        currentState.lastOtp = otpResult.otp;
+        await bot.telegram.sendMessage(
           chatId,
-          `🔔 <b>OTP Masuk Otomatis!</b>\n\n` +
-            `📧 <code>${email}</code>\n\n` +
-            `Kode OTP kamu:\n<code>${result.otp}</code>\n\n` +
-            `Klik kode di atas untuk menyalin.`,
+          `🔔 <b>OTP Otomatis Terdeteksi!</b>\n\n📧 <code>${email}</code>\n\n` +
+            `Tap kode di bawah untuk menyalin:\n<code>${otpResult.otp}</code>`,
           { parse_mode: "HTML", ...inboxKeyboard() }
         );
       }
     } catch (e) {
-      // abaikan error jaringan, lanjut polling
+      // abaikan error jaringan sementara
     }
-  }, interval);
+  }, pollInterval);
 
   getState(chatId).pollingTimer = timer;
 });
 
-// --- Stop Auto OTP ---
+// --- Stop Auto Notif ---
 bot.action("stop_auto_otp", async (ctx) => {
-  await ctx.answerCbQuery("Auto OTP dihentikan.");
+  await ctx.answerCbQuery("Auto Notif dihentikan.");
   stopPolling(ctx.chat.id);
   const state = getState(ctx.chat.id);
   ctx.replyWithHTML(
-    `⛔ <b>Auto OTP dihentikan.</b>\n\n📧 <code>${state.email || "-"}</code>`,
+    `⛔ <b>Auto Notif dihentikan.</b>\n\n📧 <code>${state.email || "-"}</code>`,
     inboxKeyboard()
   );
 });
 
-// --- Fallback pesan biasa ---
+// --- Fallback ---
 bot.on("text", (ctx) => {
-  ctx.replyWithHTML(
-    `👋 Gunakan tombol di bawah untuk memulai:`,
-    mainMenuKeyboard()
-  );
+  ctx.replyWithHTML(`Gunakan tombol di bawah:`, mainMenuKeyboard());
 });
-
-// ============================================================
-//  UTIL
-// ============================================================
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
 
 // ============================================================
 //  START
