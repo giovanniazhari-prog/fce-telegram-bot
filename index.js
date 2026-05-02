@@ -6,10 +6,8 @@ const fetch = require("node-fetch");
 // ============================================================
 //  KONFIGURASI
 // ============================================================
-const BOT_TOKEN = process.env.BOT_TOKEN || "8673639594:AAELpPmuSEm2DT0JiNUQPOpHumY4X4QKnZk";
-const FCE_API_KEY =
-  process.env.FCE_API_KEY ||
-  "fce_65c103c6e058441f729fa73515bde90dd3fa6f3eaaaabff51ee09685ef133829";
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const FCE_API_KEY = process.env.FCE_API_KEY;
 const FCE_BASE = "https://api2.freecustom.email/v1";
 
 const ADMIN_ID = 6533320536;
