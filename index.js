@@ -761,12 +761,46 @@ require("dotenv").config();
   // ============================================================
   //  START
   // ============================================================
-  bot.launch().then(() => {
-    console.log("✅ Bot started successfully");
-  }).catch(err => {
-    console.log(`❌ Bot failed to start: ${err.message}`);
-    process.exit(1);
-  });
+  // ============================================================
+  //  LAUNCH DENGAN RETRY (untuk handle 409 Conflict)
+  // ============================================================
+  async function launchBot() {
+    // Step 1: Hapus webhook dulu (bersihkan state Telegram)
+    try {
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+      console.log("[launch] Webhook deleted, pending updates dropped");
+    } catch (e) {
+      console.log(`[launch] deleteWebhook warning: ${e.message}`);
+    }
+
+    // Step 2: Tunggu sebentar biar getUpdates lama timeout di Telegram (max 50s)
+    const waitMs = 8000;
+    console.log(`[launch] Waiting ${waitMs}ms before starting polling...`);
+    await new Promise(r => setTimeout(r, waitMs));
+
+    // Step 3: Launch dengan retry
+    let attempt = 0;
+    while (true) {
+      attempt++;
+      try {
+        console.log(`[launch] Attempt ${attempt}: starting bot...`);
+        await bot.launch();
+        console.log("✅ Bot started successfully");
+        break;
+      } catch (err) {
+        if (err.response?.error_code === 409 || err.message?.includes('409')) {
+          const delay = Math.min(15000 * attempt, 60000);
+          console.log(`[launch] 409 Conflict, retry in ${delay}ms (attempt ${attempt})`);
+          await new Promise(r => setTimeout(r, delay));
+        } else {
+          console.log(`❌ Bot failed to start: ${err.message}`);
+          process.exit(1);
+        }
+      }
+    }
+  }
+
+  launchBot();
 
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
