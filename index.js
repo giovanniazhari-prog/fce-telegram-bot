@@ -298,11 +298,16 @@ require("dotenv").config();
       );
 
       const rawMessages = result.snapshot.data?.messages;
-      const messages = Array.isArray(rawMessages?.[0]) ? rawMessages[0] : [];
+      // rawMessages = [[msg1_wrapped, msg2_wrapped, ...], {"s":"arr"}]
+      // Each msg_wrapped = [{actual msg obj}, {"s":"arr"}]
+      const messageList = Array.isArray(rawMessages?.[0]) ? rawMessages[0] : [];
+      // Unwrap each message dari [msgObj, {"s":"arr"}] → msgObj, skip Livewire markers
+      const messages = messageList
+        .map(item => Array.isArray(item) ? item[0] : item)
+        .filter(m => m && typeof m === 'object' && !m.s && m.id);
       
       if (messages.length > 0) {
-        console.log(`[fetchInbox] chatId=${chatId} found ${messages.length} msg(s). First msg keys: ${Object.keys(messages[0]).join(',')}`);
-        console.log(`[fetchInbox] First msg RAW: ${JSON.stringify(messages[0])}`);
+        console.log(`[fetchInbox] chatId=${chatId} found ${messages.length} msg(s). Keys: ${Object.keys(messages[0]).join(',')}`);
       }
       
       return { success: true, messages };
@@ -320,6 +325,20 @@ require("dotenv").config();
       if (msg[k] !== undefined && msg[k] !== null && msg[k] !== '') return msg[k];
     }
     return null;
+  }
+
+  // Strip HTML tags → plain text
+  function stripHtml(html) {
+    if (!html) return '';
+    return html
+      .replace(/<style[^>]*>[sS]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[sS]*?<\/script>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/?(div|p|tr|li|h[1-6])[^>]*>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   // ============================================================
@@ -372,28 +391,34 @@ require("dotenv").config();
         for (const msg of messages) {
           // Coba semua kemungkinan field ID
           const mid = getMsgField(msg, 'id','email_id','mail_id','uid','message_id') 
-            || `${getMsgField(msg,'from','sender','from_address','from_email') || ''}-${getMsgField(msg,'subject','title','email_subject') || ''}`;
+            || `${getMsgField(msg,'sender_email','from','sender') || ''}-${getMsgField(msg,'subject','title') || ''}`;
           
           if (!cs.seenMessageIds.has(String(mid))) {
             cs.seenMessageIds.add(String(mid));
             
-            // Ambil fields dengan fallback lengkap
-            const from = getMsgField(msg, 'from','sender','from_address','from_email','reply_to') || '-';
-            const subject = getMsgField(msg, 'subject','title','email_subject','Subject') || '(tanpa subjek)';
-            const body = getMsgField(msg, 'body','html','text','body_html','html_body','text_body','content','message','plain') || '';
-            const time = getMsgField(msg, 'created_at','date','receivedAt','received_at','timestamp','time');
+            // Field names dari free-temp-mail: sender_email, sender_name, subject, content, date, id
+            const from = getMsgField(msg, 'sender_email','sender_name','from','sender','from_address','from_email') || '-';
+            const senderName = getMsgField(msg, 'sender_name') || '';
+            const subject = getMsgField(msg, 'subject','title','email_subject') || '(tanpa subjek)';
+            const contentHtml = getMsgField(msg, 'content','body','html','text','body_html') || '';
+            const bodyText = stripHtml(contentHtml);
+            const time = getMsgField(msg, 'date','datediff','created_at','receivedAt','received_at');
+
+            const fromDisplay = senderName && senderName !== from ? `${senderName} <${from}>` : from;
+            const bodyPreview = truncate(bodyText, 800);
 
             await bot.telegram.sendMessage(chatId,
               `📩 <b>Email Baru Masuk!</b>\n\n` +
               `📧 <code>${email}</code>\n\n` +
-              `<b>Dari:</b> ${escapeHtml(from)}\n` +
+              `<b>Dari:</b> ${escapeHtml(fromDisplay)}\n` +
               `<b>Subjek:</b> ${escapeHtml(truncate(subject, 80))}\n` +
-              (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : ""),
+              (time ? `<b>Waktu:</b> ${escapeHtml(String(time))}\n` : "") +
+              (bodyPreview ? `\n<b>Isi:</b>\n<code>${escapeHtml(bodyPreview)}</code>` : ""),
               { parse_mode: "HTML", ...inboxKeyboard() }
             );
 
-            // Deteksi OTP dari subject + body
-            const otpText = `${subject} ${body}`;
+            // Deteksi OTP dari subject + body plain text
+            const otpText = `${subject} ${bodyText}`;
             const otp = extractOtp(otpText);
             if (otp && otp !== cs.lastOtp) {
               cs.lastOtp = otp;
@@ -573,17 +598,20 @@ require("dotenv").config();
     }
 
     for (const msg of messages) {
-      const from = getMsgField(msg, 'from','sender','from_address','from_email','reply_to') || '-';
-      const subject = getMsgField(msg, 'subject','title','email_subject','Subject') || '(tanpa subjek)';
-      const body = getMsgField(msg, 'body','html','text','body_html','html_body','text_body','content','message','plain') || '';
-      const time = getMsgField(msg, 'created_at','date','receivedAt','received_at','timestamp','time');
+      const from = getMsgField(msg, 'sender_email','sender_name','from','sender','from_address') || '-';
+      const senderName = getMsgField(msg, 'sender_name') || '';
+      const subject = getMsgField(msg, 'subject','title','email_subject') || '(tanpa subjek)';
+      const contentHtml = getMsgField(msg, 'content','body','html','text','body_html') || '';
+      const bodyText = stripHtml(contentHtml);
+      const time = getMsgField(msg, 'date','datediff','created_at','receivedAt');
+      const fromDisplay = senderName && senderName !== from ? `${senderName} <${from}>` : from;
 
       await ctx.reply(
         `📩 <b>Email</b>\n\n` +
-        `<b>Dari:</b> ${escapeHtml(from)}\n` +
+        `<b>Dari:</b> ${escapeHtml(fromDisplay)}\n` +
         `<b>Subjek:</b> ${escapeHtml(truncate(subject, 80))}\n` +
-        (time ? `<b>Waktu:</b> ${new Date(time).toLocaleString("id-ID")}\n` : "") +
-        (body ? `\n<b>Isi:</b>\n${escapeHtml(truncate(body, 500))}` : ""),
+        (time ? `<b>Waktu:</b> ${escapeHtml(String(time))}\n` : "") +
+        (bodyText ? `\n<b>Isi:</b>\n<code>${escapeHtml(truncate(bodyText, 800))}</code>` : ""),
         { parse_mode: "HTML", ...inboxKeyboard() }
       );
     }
@@ -615,9 +643,9 @@ require("dotenv").config();
 
     let foundOtp = null;
     for (const m of [...messages].reverse()) {
-      const subject = getMsgField(m, 'subject','title','email_subject','Subject') || '';
-      const body = getMsgField(m, 'body','html','text','body_html','html_body','text_body','content','message','plain') || '';
-      const combined = `${subject} ${body}`;
+      const subject = getMsgField(m, 'subject','title','email_subject') || '';
+      const contentHtml = getMsgField(m, 'content','body','html','text','body_html') || '';
+      const combined = `${subject} ${stripHtml(contentHtml)}`;
       const otp = extractOtp(combined);
       if (otp) { foundOtp = otp; break; }
     }
